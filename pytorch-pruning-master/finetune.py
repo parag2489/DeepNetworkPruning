@@ -19,7 +19,7 @@ class ModifiedVGG16Model(torch.nn.Module):
 	def __init__(self):
 		super(ModifiedVGG16Model, self).__init__()
 
-		model = models.vgg11(pretrained=True)
+		model = models.vgg16(pretrained=True)
 		self.features = model.features
 
 		for param in self.features.parameters():
@@ -70,20 +70,17 @@ class FilterPrunner:
 		return self.model.classifier(x.view(x.size(0), -1))
 
 	def compute_rank(self, grad):
-                print "Hook executed"
-                pdb.set_trace()
+                # print "Hook executed"
+                # pdb.set_trace()
 		activation_index = len(self.activations) - self.grad_index - 1
 		activation = self.activations[activation_index]
 		values = torch.sum((activation * grad), dim=-1).sum(dim=-1).sum(dim=0).data
 
 		# Normalize the rank by the filter dimensions
-		values = \
-			values / (activation.size(0) * activation.size(2) * activation.size(3))
-
+		values = values / (activation.size(0) * activation.size(2) * activation.size(3))
 
 		if activation_index not in self.filter_ranks:
-			self.filter_ranks[activation_index] = \
-				torch.FloatTensor(activation.size(1)).zero_().cuda()
+			self.filter_ranks[activation_index] = torch.FloatTensor(activation.size(1)).zero_().cuda()
 
 		self.filter_ranks[activation_index] += values
 		self.grad_index += 1
@@ -224,6 +221,7 @@ class PrunningFineTuner_VGG16:
 			print "Layers that will be prunned", layers_prunned
 			print "Prunning filters.. "
 			model = self.model.cpu()
+                        # pdb.set_trace()
 			for layer_index, filter_index in prune_targets:
 				model = prune_vgg16_conv_layer(model, layer_index, filter_index)
 
@@ -234,11 +232,11 @@ class PrunningFineTuner_VGG16:
 			self.test()
 			print "Fine tuning to recover from prunning iteration."
 			optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
-			self.train(optimizer, epoches = 10)
+			self.train(optimizer, epoches = 4)
 
 
 		print "Finished. Going to fine tune the model a bit more"
-		self.train(optimizer, epoches = 15)
+		self.train(optimizer, epoches = 4)
 		torch.save(model, "model_prunned")
 
 def get_args():
@@ -253,6 +251,7 @@ def get_args():
     return args
 
 if __name__ == '__main__':
+        t1 = time.time()
 	args = get_args()
 
 	if args.train:
@@ -268,3 +267,4 @@ if __name__ == '__main__':
 
 	elif args.prune:
 		fine_tuner.prune()
+        print "Time elapsed: ", time.time() - t1, " seconds"

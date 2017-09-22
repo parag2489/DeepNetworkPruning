@@ -3,6 +3,7 @@ from torch.autograd import Variable
 from torchvision import models
 import sys
 import numpy as np
+import pdb
  
 def replace_layers(model, i, indexes, layers):
 	if i in indexes:
@@ -10,6 +11,7 @@ def replace_layers(model, i, indexes, layers):
 	return model[i]
 
 def prune_vgg16_conv_layer(model, layer_index, filter_index):
+	# pdb.set_trace()
 	_, conv = model.features._modules.items()[layer_index]
 	next_conv = None
 	offset = 1
