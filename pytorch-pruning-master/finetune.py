@@ -12,13 +12,14 @@ from prune import *
 import argparse
 from operator import itemgetter
 from heapq import nsmallest
+import pdb
 import time
 
 class ModifiedVGG16Model(torch.nn.Module):
 	def __init__(self):
 		super(ModifiedVGG16Model, self).__init__()
 
-		model = models.vgg16(pretrained=True)
+		model = models.vgg11(pretrained=True)
 		self.features = model.features
 
 		for param in self.features.parameters():
@@ -69,12 +70,12 @@ class FilterPrunner:
 		return self.model.classifier(x.view(x.size(0), -1))
 
 	def compute_rank(self, grad):
+                print "Hook executed"
+                pdb.set_trace()
 		activation_index = len(self.activations) - self.grad_index - 1
 		activation = self.activations[activation_index]
-		values = \
-			torch.sum((activation * grad), dim = 0).\
-				sum(dim=2).sum(dim=3)[0, :, 0, 0].data
-		
+		values = torch.sum((activation * grad), dim=-1).sum(dim=-1).sum(dim=0).data
+
 		# Normalize the rank by the filter dimensions
 		values = \
 			values / (activation.size(0) * activation.size(2) * activation.size(3))
@@ -196,7 +197,6 @@ class PrunningFineTuner_VGG16:
 	def prune(self):
 		#Get the accuracy before prunning
 		self.test()
-
 		self.model.train()
 
 		#Make sure all the layers are trainable
@@ -262,7 +262,7 @@ if __name__ == '__main__':
 	fine_tuner = PrunningFineTuner_VGG16(args.train_path, args.test_path, model)
 
 	if args.train:
-		fine_tuner.train(epoches = 20)
+		fine_tuner.train(epoches = 8)
 		torch.save(model, "model")
 
 	elif args.prune:
