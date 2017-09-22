@@ -80,6 +80,7 @@ class FilterPrunner:
 		values = \
 			values / (activation.size(0) * activation.size(2) * activation.size(3))
 
+
 		if activation_index not in self.filter_ranks:
 			self.filter_ranks[activation_index] = \
 				torch.FloatTensor(activation.size(1)).zero_().cuda()
