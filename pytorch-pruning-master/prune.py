@@ -22,7 +22,11 @@ def prune_vgg16_conv_layer(model, layer_index, filter_index):
 			next_name, next_conv = res
 			break
 		offset = offset + 1
-	
+
+	is_bias_present = False
+	if conv.bias is not None:
+		is_bias_present = True
+
 	new_conv = \
 		torch.nn.Conv2d(in_channels = conv.in_channels, \
 			out_channels = conv.out_channels - 1,
@@ -31,7 +35,7 @@ def prune_vgg16_conv_layer(model, layer_index, filter_index):
 			padding = conv.padding,
 			dilation = conv.dilation,
 			groups = conv.groups,
-			bias = conv.bias)
+			bias = is_bias_present)
 
 	old_weights = conv.weight.data.cpu().numpy()
 	new_weights = new_conv.weight.data.cpu().numpy()
@@ -48,6 +52,9 @@ def prune_vgg16_conv_layer(model, layer_index, filter_index):
 	new_conv.bias.data = torch.from_numpy(bias).cuda()
 
 	if not next_conv is None:
+		is_bias_present = False
+		if next_conv.bias is not None:
+			is_bias_present = True
 		next_new_conv = \
 			torch.nn.Conv2d(in_channels = next_conv.in_channels - 1,\
 				out_channels =  next_conv.out_channels, \
@@ -56,7 +63,7 @@ def prune_vgg16_conv_layer(model, layer_index, filter_index):
 				padding = next_conv.padding,
 				dilation = next_conv.dilation,
 				groups = next_conv.groups,
-				bias = next_conv.bias)
+				bias = is_bias_present)
 
 		old_weights = next_conv.weight.data.cpu().numpy()
 		new_weights = next_new_conv.weight.data.cpu().numpy()

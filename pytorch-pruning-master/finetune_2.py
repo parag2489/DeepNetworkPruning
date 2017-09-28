@@ -1,6 +1,6 @@
 import torch
 from torch.autograd import Variable
-from torchvision import models
+from torchvision import models, utils
 import sys
 import numpy as np
 import torchvision
@@ -12,34 +12,40 @@ from prune import *
 import argparse
 from operator import itemgetter
 from heapq import nsmallest
+import matplotlib.pyplot as plt
 import pdb
 import time
 
+# this code was not training the convolution filters previously i.e. only training the classifier stage, now it is.
 
 class ModifiedVGG16Model(torch.nn.Module):
     def __init__(self):
         super(ModifiedVGG16Model, self).__init__()
 
-        model = models.vgg11(pretrained=True)
+        model = models.resnet18(pretrained=True)
         self.features = model.features
+        self.imagenet_classifier = model.classifier
 
+        # change param.requires_grad = False to freeze all the convolution layers
         for param in self.features.parameters():
             param.requires_grad = False
 
-        self.classifier = model.classifier
-        # self.classifier = nn.Sequential(
-        #     nn.Dropout(),
-        #     nn.Linear(25088, 4096),
-        #     nn.ReLU(inplace=True),
-        #     nn.Dropout(),
-        #     nn.Linear(4096, 4096),
-        #     nn.ReLU(inplace=True),
-        #     nn.Linear(4096, 2))
+        self.classifier = nn.Sequential(
+            nn.Dropout(),
+            nn.Linear(25088, 1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(inplace=True),
+            nn.Linear(1024, 2))
 
-    def forward(self, x):
+    def forward(self, x, imagenet=False):
         x = self.features(x)
         x = x.view(x.size(0), -1)
-        x = self.classifier(x)
+        if not imagenet:
+            x = self.classifier(x)
+        else:
+            x = self.imagenet_classifier(x)
         return x
 
 
@@ -127,41 +133,59 @@ class FilterPrunner:
 
 
 class PrunningFineTuner_VGG16:
-    def __init__(self, train_path, test_path, model):
+    def __init__(self, train_path, test_path, imagenet_path, model):
         self.train_data_loader = dataset.loader(train_path)
         self.test_data_loader = dataset.test_loader(test_path)
+        self.imagenet_val_loader = dataset.test_loader(imagenet_path)
 
         self.model = model
         self.criterion = torch.nn.CrossEntropyLoss()
         self.prunner = FilterPrunner(self.model)
         self.model.train()
 
-    def test(self):
+    def test(self, imagenet=False):
         self.model.eval()
         correct = 0
         total = 0
 
         for i, (batch, label) in enumerate(self.test_data_loader):
             batch = batch.cuda()
-            output = model(Variable(batch))
+            output = model(Variable(batch), imagenet=False)
             pred = output.data.max(1)[1]
             correct += pred.cpu().eq(label).sum()
             total += label.size(0)
 
-        print "Accuracy :", float(correct) / total
+        print "Accuracy on custom data:", float(correct) / total
+
+        if imagenet:
+            correct = 0
+            total = 0
+
+            for i, (batch, label) in enumerate(self.imagenet_val_loader):
+                # grid = utils.make_grid(batch)
+                # plt.imshow(grid.numpy().transpose((1, 2, 0)))
+
+                batch = batch.cuda()
+                output = model(Variable(batch), imagenet=True)
+                pred = output.data.max(1)[1]
+                correct += pred.cpu().eq(label).sum()
+                total += label.size(0)
+
+            print "Accuracy on ILSVRC2012 subset of 5000 images:", float(correct) / total
 
         self.model.train()
 
     def train(self, optimizer=None, epoches=10):
         if optimizer is None:
             optimizer = \
-                optim.SGD(model.classifier.parameters(),
-                          lr=0.0001, momentum=0.9, weight_decay=1e-6, nesterov=True)
-
+                optim.SGD(model.parameters(),
+                          # changed model.classifier.parameters() to model.parameters() to train all layers and not just classifier layers
+                          lr=0.0001, momentum=0.9)
+        self.test(imagenet=True)
         for i in range(epoches):
             print "Epoch: ", i
             self.train_epoch(optimizer)
-            self.test()
+            self.test(imagenet=True)
         print "Finished fine tuning."
 
     def train_batch(self, optimizer, batch, label, rank_filters):
@@ -197,7 +221,7 @@ class PrunningFineTuner_VGG16:
 
     def prune(self):
         # Get the accuracy before prunning
-        self.test()
+        self.test(imagenet=True)
         self.model.train()
 
         # Make sure all the layers are trainable
@@ -228,70 +252,19 @@ class PrunningFineTuner_VGG16:
             for layer_index, filter_index in prune_targets:
                 model = prune_vgg16_conv_layer(model, layer_index, filter_index)
 
-                # set parameters of only the layer corresponding to layer_index and the next layer to true.
-				# Also the last layer parameters are always true
-
-                # firstly, parameters for all the layers are set to false
-                for param in model.parameters():
-                    param.requires_grad = False
-
-                # set the last fc layer parameter true
-                for _, module in model.classifier._modules.items()[::-1]:
-					if isinstance(module, torch.nn.Linear):
-						for param in module.parameters():
-							param.requires_grad = True
-
-				# set parameters of only the layer corresponding to layer_index and the next layer to true.
-                _, curr_layer = model.features._modules.items()[layer_index]
-                for param in curr_layer.parameters():
-                    param.requires_grad = True
-
-                # get the next conv layer and set it as learnable
-                offset = 1
-                next_conv_found = False
-
-                while layer_index + offset < len(model.features._modules.items()):
-					_, res = model.features._modules.items()[layer_index + offset]
-					if isinstance(res, torch.nn.modules.conv.Conv2d):
-						next_conv_found = True
-						for param in res.parameters():
-							param.requires_grad = True
-						break
-					offset = offset + 1
-
-                if not next_conv_found:  # if true, then the curr_layer was the last conv layer, so find the next fc layer
-					for _, module in model.classifier._modules.items():
-						if isinstance(module, torch.nn.Linear):
-							for param in module.parameters():
-								param.requires_grad = True
-
-                model = model.cuda()
-                print "Fine tuning to recover from prunning iteration. Two conv layers and all classifier layers will be trained"
-                optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001,
-									  momentum=0.9, weight_decay=1e-6, nesterov=True)
-                self.train(optimizer, epoches=4)
-                model = model.cpu()
-
-            # for param in model.features.parameters():
-            #     param.requires_grad = True
-            # self.model = model.cuda()
+            self.model = model.cuda()
 
             message = str(100 * float(self.total_num_filters()) / number_of_filters) + "%"
             print "Filters prunned", str(message)
-            self.test()
-            # print "Fine tuning to recover from prunning iteration."
-            # optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-6, nesterov=True)
-            # self.train(optimizer, epoches=3)
+            print "Now testing with the pruned model before fine tuning"
+            self.test(imagenet=True)
+            print "Fine tuning to recover from prunning iteration."
+            optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
+            self.train(optimizer, epoches=4)
 
-        for param in model.parameters():
-            param.requires_grad = True
-	    model = model.cuda()
-        self.model = model
-
-        optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001,
-							  momentum=0.9, weight_decay=1e-6, nesterov=True)
         print "Finished. Going to fine tune the model a bit more"
         self.train(optimizer, epoches=4)
+        print "Saving pruned model"
         torch.save(model, "model_prunned")
 
 
@@ -299,8 +272,9 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train", dest="train", action="store_true")
     parser.add_argument("--prune", dest="prune", action="store_true")
-    parser.add_argument("--train_path", type=str, default="/data1/VisionDatasets/ImageNet_Fall2011/ILSVRC2012_grouped/train")
-    parser.add_argument("--test_path", type=str, default="/data1/VisionDatasets/ImageNet_Fall2011/ILSVRC2012_grouped/test")
+    parser.add_argument("--train_path", type=str, default="train")
+    parser.add_argument("--test_path", type=str, default="test")
+    parser.add_argument("--imagenet_path", type=str, default="/data1/ImageNet_Fall2011/ILSVRC2012_grouped")
     parser.set_defaults(train=False)
     parser.set_defaults(prune=False)
     args = parser.parse_args()
@@ -316,7 +290,7 @@ if __name__ == '__main__':
     elif args.prune:
         model = torch.load("model").cuda()
 
-    fine_tuner = PrunningFineTuner_VGG16(args.train_path, args.test_path, model)
+    fine_tuner = PrunningFineTuner_VGG16(args.train_path, args.test_path, args.imagenet_path, model)
 
     if args.train:
         fine_tuner.train(epoches=8)
